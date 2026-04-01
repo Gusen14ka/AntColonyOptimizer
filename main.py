@@ -1,3 +1,6 @@
+import os
+from typing import Any
+
 from config import ACOConfig, ACOConfig_dto
 from loader import load_problem
 from ant_colony import AntColonyOpt, ACOResult
@@ -10,6 +13,7 @@ import matplotlib.pyplot as plt
 from dataclasses import replace, asdict
 from statistics import mean
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 
 PARAMS_DATA_PATH = "data/params"
 OPT_DATA_PATH = "data/opt_params.json"
@@ -25,6 +29,95 @@ def print_detailed(results, param_name):
         print(f"Std: {data['std_len']:.2f}")
         print(f"Avg iter: {data['avg_iter']:.1f}")
         print(f"Success: {data['success_rate']*100:.1f}%")
+
+def async_executor(job: tuple[Any, Any, str, Any, int]) -> dict[str, Any]:
+    dist, base_config, param_name, param_value, seed = job
+
+    # Делаем копию конфига и изменяем его
+    config = replace(base_config)
+    setattr(config, param_name, param_value)
+    if param_name == "num_ants":
+        config.one_ant_per_vert = False
+
+    config.seed = seed
+
+    aco = AntColonyOpt(dist, config)
+    result = aco.solve()
+
+    return {
+        "param_value": param_value,
+        "seed": seed,
+        "best_len": result.best_len,
+        "best_iter": result.best_iter,
+        "history_best": result.history_best,
+    }
+
+def async_experimets(
+    dist,
+    base_config,
+    param_name: str,
+    values: list[Any],
+    seeds: list[int],
+) -> dict[Any, dict[str, list[Any]]]:
+    jobs = [
+        (dist, base_config, param_name, val, seed)
+        for val in values
+        for seed in seeds
+    ]
+
+    max_workers = min(os.cpu_count() or 1, len(jobs))
+
+    # Создаём заготовку для результатов
+    grouped: dict[Any, dict[str, list[Any]]] = {
+        val: {"lens": [], "best_iters": [], "histories": []}
+        for val in values
+    }
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        for out in executor.map(async_executor, jobs, chunksize=1):
+            bucket = grouped[out["param_value"]]
+            bucket["lens"].append(out["best_len"])
+            bucket["best_iters"].append(out["best_iter"])
+            bucket["histories"].append(out["history_best"])
+
+    return grouped
+
+def async_run_experiment(dist, base_config: ACOConfig_dto, param_name: str, values: list[int] | list[float], seeds: list[int]):
+    print(f"\n=== Testing {param_name} ===")
+    results = async_experimets(dist, base_config, param_name, values, seeds)
+
+    output = {}
+    for val in values:
+        lens = results[val]["lens"]
+        best_iters = results[val]["best_iters"]
+        histories = results[val]["histories"]
+
+        avg_len = mean(lens)
+        dev_lens = []
+        for len in lens:
+            dev_lens.append((len - OPTIMAL) / OPTIMAL * 100)
+        dev_len = mean(dev_lens)
+        avg_iter = mean(best_iters)
+
+        output[val] = {
+            "lens": lens,
+            "avg_len": avg_len,
+            "dev_len": dev_len,
+            "avg_iter": avg_iter,
+            "histories": histories
+        }
+
+        print(
+            f"{param_name}={val} | "
+            f"avg_len={avg_len:.2f} | dev_len={dev_len:.2f} | "
+            f"avg_iter={avg_iter:.1f}"
+        )
+
+    # Сохраним значения
+    save_json(f"{PARAMS_DATA_PATH}/{param_name}.json", output)
+    return output
+
+
 
 def run_experiment(dist, base_config: ACOConfig_dto, param_name: str, values: list[int] | list[float], seeds: list[int]):
     results = {}
@@ -100,8 +193,8 @@ def main(args: argparse.Namespace) -> None:
 
     seeds = list(range(10))
     experiments = {
-        #"alpha": [0.5, 1.0, 1.5],
-        "beta": [1, 2, 3, 5, 7],
+        "alpha": [0.5, 1.0, 1.5, 2.0],
+        # "beta": [1, 2, 3, 5, 7],
         # "rho": [0.9, 0.8, 0.7, 0.5],
         # "q": [100, 200, 500],
         # "num_ants": [20, 30, 50]
@@ -111,7 +204,8 @@ def main(args: argparse.Namespace) -> None:
 
     if(args.param_analis):
         for param, values in experiments.items():
-            result = run_experiment(dist, config, param, values, seeds)
+            #result = run_experiment(dist, config, param, values, seeds)
+            result = async_run_experiment(dist, config, param, values, seeds)
             all_results[param] = result
 
             plot_param_influence(param, result, OPTIMAL)
