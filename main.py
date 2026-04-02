@@ -16,7 +16,7 @@ import argparse
 from concurrent.futures import ProcessPoolExecutor
 
 PARAMS_DATA_PATH = "data/params"
-OPT_DATA_PATH = "data/opt_params.json"
+OPT_DATA_PATH = "data"
 OPTIMAL = 7542
 
 def print_detailed(results, param_name):
@@ -36,7 +36,8 @@ def async_executor(job: tuple[Any, Any, str, Any, int]) -> dict[str, Any]:
     # Делаем копию конфига и изменяем его
     config = replace(base_config)
     setattr(config, param_name, param_value)
-    if param_name == "num_ants":
+    
+    if param_name == "num_ants" and int(param_value) != 52:
         config.one_ant_per_vert = False
 
     config.seed = seed
@@ -117,6 +118,30 @@ def async_run_experiment(dist, base_config: ACOConfig_dto, param_name: str, valu
     save_json(f"{PARAMS_DATA_PATH}/{param_name}.json", output)
     return output
 
+def async_run_experiment2(dist, base_config: ACOConfig_dto, param_name: str, values: list[int] | list[float], seeds: list[int]):
+    print(f"\n=== Calculate table2 ===")
+    results = async_experimets(dist, base_config, param_name, values, seeds)
+
+    output = {}
+    for val in values:
+        lens = results[val]["lens"]
+        best_iters = results[val]["best_iters"]
+        
+        dev_lens = []
+        for len in lens:
+            dev_lens.append((len - OPTIMAL) / OPTIMAL * 100)
+        avg_iter = mean(best_iters)
+
+        output[val] = {
+            "lens": lens,
+            "dev_lens": dev_lens,
+            "best_iters": best_iters,
+        }
+
+
+    # Сохраним значения
+    save_json(f"{OPT_DATA_PATH}/table2.json", output)
+    return output
 
 
 def run_experiment(dist, base_config: ACOConfig_dto, param_name: str, values: list[int] | list[float], seeds: list[int]):
@@ -170,6 +195,8 @@ def run_experiment(dist, base_config: ACOConfig_dto, param_name: str, values: li
     return results
 
 
+
+
 def main(args: argparse.Namespace) -> None:
     file = Path("berlin52.tsp")
     if not file.exists() or not file.is_file():
@@ -191,13 +218,13 @@ def main(args: argparse.Namespace) -> None:
         tau_max=1e8,
     )
 
-    seeds = list(range(10))
+    seeds = list(range(10, 21))
     experiments = {
-        "alpha": [0.5, 1.0, 1.5, 2.0],
-        # "beta": [1, 2, 3, 5, 7],
-        # "rho": [0.9, 0.8, 0.7, 0.5],
-        # "q": [100, 200, 500],
-        # "num_ants": [20, 30, 50]
+        # "alpha": [0.2, 0.7, 1.0, 1.5, 2.0],
+        # "beta": [0.5, 1, 2, 3, 5, 7],
+        # "rho": [0.95, 0.9, 0.8, 0.7, 0.5, 0.2, 0.1],
+        "q": [350, 650]#"q": [10, 20, 40, 100, 200, 500]
+        # "num_ants": [10, 20, 30, 50, 52, 70, 100]
     }
 
     all_results = {}
@@ -230,15 +257,21 @@ def main(args: argparse.Namespace) -> None:
 
         result_opt = aco.solve()
 
-        save_json(OPT_DATA_PATH, to_builtin(asdict(result_opt)))
+        save_json(f"{OPT_DATA_PATH}/opt_params.json", to_builtin(asdict(result_opt)))
     else:
-        result_dict = parse_json(OPT_DATA_PATH)
+        result_dict = parse_json(f"{OPT_DATA_PATH}/opt_params.json")
         result_opt = ACOResult(**result_dict)
 
     plot_tour(coords, result_opt.best_cicle, title=f"Наикротчайший маршрут, длина = {result_opt.best_len:.2f}, итерация сход. = {result_opt.best_iter}, всего итераций = {result_opt.num_iter}")
 
     histories.append(result_opt.history_best)
-    plot_convergence(histories)
+    plot_convergence(histories, OPTIMAL)
+
+    if args.calc_opt10:
+        print("=== Таблица 2 ===")
+        fake_alpha = [1.0]
+        result = async_run_experiment2(dist, config, "alpha", fake_alpha, seeds)
+        
 
     plt.show()
 
@@ -247,6 +280,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--param_analis", action="store_true") # Флаг расчёта данных для анализа влияния параметров
     parser.add_argument("--calc_opt", action="store_true") # Флаг расчёта данных при оптимальных параметрах
+    parser.add_argument("--calc_opt10", action="store_true") # Флаг для расчёта данных при оптимальных параметрах 10 раз
     main(parser.parse_args())
 
 
